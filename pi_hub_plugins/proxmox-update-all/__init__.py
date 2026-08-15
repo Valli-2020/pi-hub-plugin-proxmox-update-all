@@ -43,7 +43,7 @@ UPGRADE_CMD = (
 
 class ProxmoxUpdateAllPlugin(Plugin):
     name = "proxmox-update-all"
-    version = "1.1.0"
+    version = "1.1.1"
     description = "Run apt-get update && upgrade on all Proxmox containers"
     min_core_version = "7.2.0"
     capabilities: list[str] = ["proxmox.read", "ssh.execute", "hosts.read"]
@@ -195,16 +195,23 @@ class ProxmoxUpdateAllPlugin(Plugin):
     # ── Helpers ────────────────────────────────────────────────────────────
 
     def _host_id_map(self) -> dict[str, str]:
-        """Map registry host IP → registry host id.
+        """Map registry host (ip OR id/name) → registry host id.
 
-        ``ssh_cmd`` addresses *registry* hosts, but a Proxmox instance only
-        carries an IP, so the two are matched on IP.
+        ``ssh_cmd`` addresses *registry* hosts, but a Proxmox instance
+        only carries a ``host`` field — which may be the IP (as the
+        plugin originally assumed) OR the registry host id/hostname
+        (how the Pi's config.json stores it).  Match on all three so
+        either config style resolves.
         """
-        return {
-            str(h.get("ip", "")): str(h.get("id", ""))
-            for h in self.ctx.get_hosts()
-            if h.get("ip") and h.get("id")
-        }
+        out: dict[str, str] = {}
+        for h in self.ctx.get_hosts():
+            hid = str(h.get("id", ""))
+            if not hid:
+                continue
+            for key in (h.get("ip"), h.get("id"), h.get("name")):
+                if key:
+                    out[str(key)] = hid
+        return out
 
     def _finish(self, status: str, message: str, toast: str, kind: str) -> None:
         self.ctx.set_task_status(TASK_NAME, status, message)
