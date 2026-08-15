@@ -45,7 +45,7 @@ class ProxmoxUpdateAllPlugin(Plugin):
     name = "proxmox-update-all"
     version = "1.1.2"
     description = "apt update + upgrade on all running Proxmox containers, per instance, via pct exec over SSH"
-    min_core_version = "7.2.0"
+    min_core_version = "7.3.2"
     capabilities: list[str] = ["proxmox.read", "ssh.execute", "hosts.read"]
 
     def load(self, ctx: PluginContext) -> None:
