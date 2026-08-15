@@ -43,8 +43,8 @@ UPGRADE_CMD = (
 
 class ProxmoxUpdateAllPlugin(Plugin):
     name = "proxmox-update-all"
-    version = "1.1.1"
-    description = "Run apt-get update && upgrade on all Proxmox containers"
+    version = "1.1.2"
+    description = "apt update + upgrade on all running Proxmox containers, per instance, via pct exec over SSH"
     min_core_version = "7.2.0"
     capabilities: list[str] = ["proxmox.read", "ssh.execute", "hosts.read"]
 
