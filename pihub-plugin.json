@@ -1,0 +1,9 @@
+{
+  "name": "proxmox-update-all",
+  "version": "1.0.0",
+  "description": "Run apt-get update && upgrade on all Proxmox containers",
+  "min_core_version": "7.2.0",
+  "plugin_api_version": 1,
+  "author": "Valli-2020",
+  "license": "MIT"
+}
