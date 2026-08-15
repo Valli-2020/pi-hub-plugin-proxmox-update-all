@@ -28,6 +28,8 @@ from pi_hub.plugins.base import (
     Plugin,
     PluginContext,
     RouteDef,
+    TabUIDef,
+    ActionDef,
     thread_cancel,
 )
 
@@ -41,7 +43,7 @@ UPGRADE_CMD = (
 
 class ProxmoxUpdateAllPlugin(Plugin):
     name = "proxmox-update-all"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "Run apt-get update && upgrade on all Proxmox containers"
     min_core_version = "7.2.0"
     capabilities: list[str] = ["proxmox.read", "ssh.execute", "hosts.read"]
@@ -57,6 +59,26 @@ class ProxmoxUpdateAllPlugin(Plugin):
         return [
             RouteDef("GET", "/status", self.status_handler, caps=["admin"]),
             RouteDef("POST", "/update-all", self.update_all_handler, caps=["admin"]),
+        ]
+
+    def get_ui(self) -> list[Any]:
+        return [
+            TabUIDef(
+                id="proxmox-update-all",
+                label="Container updates",
+                icon_svg=(
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                    'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+                    '<path d="M4 17 10 11 14 15 20 9"/>'
+                    '<path d="M4 21h16"/></svg>'
+                ),
+                position=10,
+                poll_endpoint="/api/plugin/proxmox-update-all/status",
+                actions=[
+                    ActionDef("update-all", "Update all containers",
+                              style="primary", caps=["admin"]),
+                ],
+            ),
         ]
 
     # ── Route handlers ─────────────────────────────────────────────────────
