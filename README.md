@@ -41,9 +41,8 @@ The sidebar now shows a **Container updates** tab with an
 **Update all containers** button, a **Check for updates** button, and a
 live status table.
 
-> Requires Pi Hub **7.4.2+** for the long SSH timeout used by the upgrade
-> command, and **7.3.2+** for the plugin-tab UI renderer. Passwordless SSH
-> from the Pi to the Proxmox host as `root` is required.
+> Requires Pi Hub **8.3.0+** (Configure dialog). Passwordless SSH from the
+> Pi to the Proxmox host as `root` is required.
 
 ## Usage
 
@@ -60,12 +59,22 @@ the run.
 
 ## Configuration
 
-Options are persisted in the plugin's `config.json` (via `POST /config`):
+Everything is set in **Settings -> Plugins -> Configure** (Pi Hub 8.3.0+).
+Changes apply from the next run.
 
-- `auto_reboot` (default `false`): when `true`, containers flagged
-  reboot-required are rebooted through the Proxmox API after upgrade.
-- `continue_on_error` (default `true`): keep updating the remaining
-  containers if one fails, instead of aborting the whole run.
+| Setting | Type | Section | Default | Meaning |
+|---|---|---|---|---|
+| `dry_run` | checkbox | Behaviour | off | "Update all containers" only checks, changes nothing |
+| `continue_on_error` | checkbox | Behaviour | on | Keep going after a failed container |
+| `auto_reboot` | checkbox | Behaviour | off | Reboot containers flagged reboot-required (opt-in) |
+| `instances` | textarea | Scope | empty | Only these Proxmox instance ids, one per line; empty = all enabled |
+| `exclude_vmids` | textarea | Scope | empty | Container ids never touched (updates and dry-runs) |
+| `update_timeout` | number | Timeouts | 1800 s | Per-container apt upgrade timeout (30-14400) |
+| `check_timeout` | number | Timeouts | 300 s | Per-container dry-run timeout (10-3600) |
+| `reboot_check_timeout` | number | Timeouts | 60 s | Per-container reboot probe timeout (5-600) |
+
+Configs from 1.2.0 and earlier are migrated automatically. `POST /config`
+still accepts the three checkbox options.
 
 The plugin uses your existing Pi Hub configuration for the rest:
 
@@ -93,7 +102,7 @@ explicitly enable `auto_reboot`. Re-review the plugin before upgrading.
 
 ## Requirements
 
-- Pi Hub 7.4.2+ (long SSH timeout), 7.3.2+ for the UI tab
+- Pi Hub 8.3.0+ (Configure dialog with textarea fields)
 - Passwordless SSH from the Pi to the Proxmox host (`ssh root@<host>`),
   same key the core already uses
 - Containers must run a Debian/Ubuntu-based image with `apt-get`

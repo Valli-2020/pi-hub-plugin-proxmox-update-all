@@ -4,6 +4,23 @@ All notable changes to this plugin are documented here. Releases follow
 the repo-tag = version convention; each GitHub release ships the two
 assets `pihub-plugin.json` and the versioned tarball.
 
+## [1.3.0] - 2026-11-14
+
+### Added
+- Every option is now in Settings -> Plugins -> Configure: dry-run only,
+  continue on error, auto-reboot, instance selection, excluded container
+  ids, and per-step timeouts (upgrade, dry-run, reboot check).
+- `dry_run` option: "Update all containers" only checks and changes nothing.
+- `instances` option limits a run to chosen Proxmox instance ids.
+- `exclude_vmids` option skips listed containers in updates and dry-runs.
+- Timeouts are passed to the SSH calls instead of the fixed 30 min default.
+- `migrate_config` converts old config files; no manual step needed.
+- Tests.
+
+### Changed
+- Requires Pi Hub 8.3.0 (`textarea` and `section` in the config schema).
+- Capabilities unchanged.
+
 ## [1.2.0] - 2026-08-16
 
 ### Added

@@ -19,6 +19,10 @@ Enumeration goes through the Proxmox API (``get_proxmox_containers``)
 rather than ``pct list`` because ``ssh_cmd`` only allows ``pct exec``
 commands — raw ``pct list`` is rejected by the capability boundary.
 
+v1.3.0 moves every setting into Settings -> Plugins -> Configure
+(``get_config_schema``), adds instance selection, container exclusions,
+timeouts and a dry-run-only switch, and migrates old config files.
+
 v1.2.0 adds (see CHANGELOG.md):
   * dry-run mode (``POST /check``) — ``apt list --upgradable`` per container
   * reboot-required detection (``/var/run/reboot-required``) and an
@@ -69,19 +73,73 @@ DRYRUN_CMD = (
 _VMID_RE = re.compile(r"^\d+$")
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "dry_run": False,            # "Update all" only checks, changes nothing
     "auto_reboot": False,        # opt-in; needs proxmox.control
     "continue_on_error": True,   # keep going past a failed container
+    "instances": "",             # instance ids, one per line; empty = all enabled
+    "exclude_vmids": "",         # container ids to skip (all runs)
+    "update_timeout": 1800,      # seconds per container, apt upgrade
+    "check_timeout": 300,        # seconds per container, dry-run
+    "reboot_check_timeout": 60,  # seconds per container, reboot probe
 }
+
+_BOOL_KEYS = ("dry_run", "auto_reboot", "continue_on_error")
+_TEXT_LIST_KEYS = ("instances", "exclude_vmids")
+_TIMEOUT_KEYS = {
+    "update_timeout": (30, 14400),
+    "check_timeout": (10, 3600),
+    "reboot_check_timeout": (5, 600),
+}
+
+
+def _parse_list(value: Any) -> list[str]:
+    """Split a textarea / old list value into unique, non-empty items."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(v) for v in value]
+    else:
+        parts = re.split(r"[\s,;]+", str(value))
+    out: list[str] = []
+    for p in parts:
+        p = p.strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def _to_bool(v: Any, default: bool) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        t = v.strip().lower()
+        if t in ("1", "true", "yes", "on"):
+            return True
+        if t in ("0", "false", "no", "off"):
+            return False
+        return default
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return default
+
+
+def _to_timeout(v: Any, key: str) -> int:
+    lo, hi = _TIMEOUT_KEYS[key]
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return int(DEFAULT_CONFIG[key])
+    return max(lo, min(hi, n))
 
 
 class ProxmoxUpdateAllPlugin(Plugin):
     name = "proxmox-update-all"
-    version = "1.2.0"
+    version = "1.3.0"
     description = (
         "apt update + upgrade on all running Proxmox containers, per "
         "instance, with dry-run and reboot detection (pct exec over SSH)"
     )
-    min_core_version = "7.3.2"
+    min_core_version = "8.3.0"
     # proxmox.control is required for the opt-in auto-reboot.  NOTE: adding
     # it grants real container control (start/stop/reboot) unconditionally
     # at load time — re-review before upgrading.  Auto-reboot itself stays
@@ -106,6 +164,91 @@ class ProxmoxUpdateAllPlugin(Plugin):
                 changed = True
         if changed:
             self.ctx.save_config()
+
+    # ── Config ─────────────────────────────────────────────────────────────
+
+    def get_config_schema(self) -> list[dict]:
+        return [
+            {"name": "dry_run", "type": "checkbox", "section": "Behaviour",
+             "label": "Dry-run only",
+             "help": "When on, 'Update all containers' only checks for "
+                     "updates and changes nothing.",
+             "default": False},
+            {"name": "continue_on_error", "type": "checkbox",
+             "section": "Behaviour",
+             "label": "Continue after a failed container",
+             "help": "Off: stop the whole run at the first failure.",
+             "default": True},
+            {"name": "auto_reboot", "type": "checkbox", "section": "Behaviour",
+             "label": "Reboot containers that need it",
+             "help": "Opt-in. After an upgrade, containers flagged "
+                     "reboot-required are rebooted through Proxmox.",
+             "default": False},
+            {"name": "instances", "type": "textarea", "section": "Scope",
+             "label": "Only these Proxmox instances",
+             "help": "Instance ids, one per line. Empty = every enabled "
+                     "instance.",
+             "placeholder": "pve1",
+             "default": ""},
+            {"name": "exclude_vmids", "type": "textarea", "section": "Scope",
+             "label": "Excluded container ids",
+             "help": "Container ids (VMIDs) never touched, one per line or "
+                     "comma separated. Applies to updates and dry-runs.",
+             "placeholder": "100\n101",
+             "default": ""},
+            {"name": "update_timeout", "type": "number", "section": "Timeouts",
+             "label": "Upgrade timeout (seconds)",
+             "help": "Per container. Keep it long: killing apt mid-run can "
+                     "leave a container half-upgraded.",
+             "default": 1800, "min": 30, "max": 14400},
+            {"name": "check_timeout", "type": "number", "section": "Timeouts",
+             "label": "Dry-run timeout (seconds)",
+             "help": "Per container, for 'apt update' + the upgradable list.",
+             "default": 300, "min": 10, "max": 3600},
+            {"name": "reboot_check_timeout", "type": "number",
+             "section": "Timeouts",
+             "label": "Reboot check timeout (seconds)",
+             "help": "Per container, for the reboot-required probe.",
+             "default": 60, "min": 5, "max": 600},
+        ]
+
+    def _cfg(self) -> dict[str, Any]:
+        """Effective config: stored values over schema defaults, normalised."""
+        raw = dict(self.ctx.get_config())
+        cfg = dict(DEFAULT_CONFIG)
+        cfg.update({k: raw[k] for k in DEFAULT_CONFIG if k in raw})
+        for k in _BOOL_KEYS:
+            cfg[k] = _to_bool(cfg[k], bool(DEFAULT_CONFIG[k]))
+        for k in _TIMEOUT_KEYS:
+            cfg[k] = _to_timeout(cfg[k], k)
+        cfg["_instances"] = _parse_list(cfg["instances"])
+        cfg["_exclude"] = set(_parse_list(cfg["exclude_vmids"]))
+        return cfg
+
+    def on_config_change(self, old: dict, new: dict) -> None:
+        # Runs read the config once at start, so a change applies from the
+        # next run on. Drop stale results when the scope changed.
+        scope = ("instances", "exclude_vmids")
+        if any((old or {}).get(k) != (new or {}).get(k) for k in scope):
+            with self._lock:
+                if not self._running:
+                    self._last = []
+                    self._last_check = []
+
+    def migrate_config(self, old_version: str, config: dict) -> dict:
+        cfg = dict(config or {})
+        for k in _BOOL_KEYS:
+            if k in cfg:
+                cfg[k] = _to_bool(cfg[k], bool(DEFAULT_CONFIG[k]))
+        for k in _TEXT_LIST_KEYS:
+            if k in cfg and not isinstance(cfg[k], str):
+                cfg[k] = "\n".join(_parse_list(cfg[k]))
+        for k in _TIMEOUT_KEYS:
+            if k in cfg:
+                cfg[k] = _to_timeout(cfg[k], k)
+        for k, v in DEFAULT_CONFIG.items():
+            cfg.setdefault(k, v)
+        return cfg
 
     def get_routes(self) -> list[RouteDef]:
         return [
@@ -161,7 +304,7 @@ class ProxmoxUpdateAllPlugin(Plugin):
         with self._lock:
             cfg = self.ctx.get_config()
             changed = False
-            for key in ("auto_reboot", "continue_on_error"):
+            for key in _BOOL_KEYS:
                 if key in body:
                     cfg[key] = bool(body[key])
                     changed = True
@@ -171,6 +314,8 @@ class ProxmoxUpdateAllPlugin(Plugin):
         return {"config": out}, 200
 
     def update_all_handler(self, **kw: Any) -> tuple[Any, int]:
+        if self._cfg()["dry_run"]:
+            return self.check_handler(**kw)
         with self._lock:
             if self._running:
                 who = self._running_task or "a run"
@@ -197,7 +342,11 @@ class ProxmoxUpdateAllPlugin(Plugin):
     # ── Background runs ─────────────────────────────────────────────────────
 
     def _instances(self) -> list[dict[str, Any]]:
-        return [i for i in self.ctx.get_proxmox_instances() if i["enabled"]]
+        wanted = self._cfg()["_instances"]
+        return [
+            i for i in self.ctx.get_proxmox_instances()
+            if i["enabled"] and (not wanted or str(i["id"]) in wanted)
+        ]
 
     def _host_id_map(self) -> dict[str, str]:
         """Map registry host (ip OR id/name) -> registry host id.
@@ -224,7 +373,7 @@ class ProxmoxUpdateAllPlugin(Plugin):
             # Snapshot config ONCE under the lock so a settings change
             # mid-run cannot flip behaviour halfway through.
             with self._lock:
-                cfg = dict(self.ctx.get_config())
+                cfg = self._cfg()
             instances = self._instances()
             if not instances:
                 self._finish(TASK_UPDATE, "done", "no Proxmox instances configured",
@@ -313,6 +462,7 @@ class ProxmoxUpdateAllPlugin(Plugin):
             c for c in listing.get("containers", [])
             if str(c.get("status", "")) == "running"
             and _VMID_RE.match(str(c.get("vmid", "")))
+            and str(c.get("vmid", "")) not in cfg["_exclude"]
         ]
         if not running:
             result["detail"] = "no running containers"
@@ -330,7 +480,9 @@ class ProxmoxUpdateAllPlugin(Plugin):
             self.ctx.set_task_status(
                 TASK_UPDATE, "running",
                 f"{inst['id']}: {name} ({idx}/{len(running)})")
-            res = self.ctx.ssh_cmd(host_id, f"pct exec {vmid} -- {UPGRADE_CMD}")
+            res = self.ctx.ssh_cmd(
+                host_id, f"pct exec {vmid} -- {UPGRADE_CMD}",
+                timeout=cfg["update_timeout"])
             cont: dict[str, Any] = {
                 "vmid": vmid, "name": name, "status": "ok",
                 "packages_updated": None, "reboot_required": False,
@@ -344,7 +496,8 @@ class ProxmoxUpdateAllPlugin(Plugin):
                     abort = True
             else:
                 rb = self.ctx.ssh_cmd(
-                    host_id, f"pct exec {vmid} -- {REBOOT_CHECK_CMD}")
+                    host_id, f"pct exec {vmid} -- {REBOOT_CHECK_CMD}",
+                    timeout=cfg["reboot_check_timeout"])
                 if not rb.get("ok"):
                     cont["detail"] = (
                         "reboot check failed: " + (rb.get("output") or "")[
@@ -381,7 +534,7 @@ class ProxmoxUpdateAllPlugin(Plugin):
         try:
             cancel = thread_cancel()
             with self._lock:
-                cfg = dict(self.ctx.get_config())
+                cfg = self._cfg()
             instances = self._instances()
             if not instances:
                 self._finish(TASK_CHECK, "done", "no Proxmox instances configured",
@@ -463,6 +616,7 @@ class ProxmoxUpdateAllPlugin(Plugin):
             c for c in listing.get("containers", [])
             if str(c.get("status", "")) == "running"
             and _VMID_RE.match(str(c.get("vmid", "")))
+            and str(c.get("vmid", "")) not in cfg["_exclude"]
         ]
         if not running:
             result["detail"] = "no running containers"
@@ -479,7 +633,9 @@ class ProxmoxUpdateAllPlugin(Plugin):
             self.ctx.set_task_status(
                 TASK_CHECK, "running",
                 f"{inst['id']}: {name} ({idx}/{len(running)})")
-            res = self.ctx.ssh_cmd(host_id, f"pct exec {vmid} -- {DRYRUN_CMD}")
+            res = self.ctx.ssh_cmd(
+                host_id, f"pct exec {vmid} -- {DRYRUN_CMD}",
+                timeout=cfg["check_timeout"])
             cont: dict[str, Any] = {
                 "vmid": vmid, "name": name, "status": "ok",
                 "packages": [], "detail": "",
