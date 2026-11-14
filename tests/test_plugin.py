@@ -89,8 +89,8 @@ def test_manifest_matches_class():
 def test_schema_core_validator_and_defaults():
     schema = make().get_config_schema()
     assert any(f["type"] == "textarea" for f in schema)
-    if "list" not in getattr(contrib, "FIELD_TYPES", ()) or \
-            "textarea" not in contrib.FIELD_TYPES:
+    if "list" not in getattr(contrib, "CONFIG_FIELD_TYPES", getattr(contrib, "FIELD_TYPES", ())) or \
+            "textarea" not in contrib.CONFIG_FIELD_TYPES:
         _skip("core contrib lacks list/textarea (8.3.0 not built yet)")
     valid = contrib.validate_config_schema(schema)
     assert [f["name"] for f in valid] == [f["name"] for f in schema]
